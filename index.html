@@ -1,0 +1,225 @@
+<!DOCTYPE html>
+<html lang="de">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+<title>Anwesenheitsliste</title>
+<style>
+:root{--bg:#fff;--fg:#1a1a1a;--line:#444;--head:#e8e8e8;--ok:#1b7a3a;--mut:#666;box-sizing:border-box;padding-top:env(safe-area-inset-top,0px);padding-bottom:env(safe-area-inset-bottom,0px)}
+@media (prefers-color-scheme:dark){:root:not([data-theme="light"]){--bg:#1b1b1b;--fg:#eee;--line:#aaa;--head:#333;--ok:#4cc77a;--mut:#aaa}}
+:root[data-theme="dark"]{--bg:#1b1b1b;--fg:#eee;--line:#aaa;--head:#333;--ok:#4cc77a;--mut:#aaa}
+html{scroll-padding-top:env(safe-area-inset-top,0px)}
+body{margin:0;padding:12px;background:var(--bg);color:var(--fg);font:15px system-ui,-apple-system,Segoe UI,sans-serif}
+h1{font-size:20px;margin:0 0 8px}
+.meta{display:flex;flex-wrap:wrap;gap:10px;margin-bottom:10px}
+.meta label{display:flex;gap:6px;align-items:center}
+select{font:inherit;color:inherit;background:var(--bg);border:0;border-bottom:1px solid var(--line);padding:3px}
+input[type=text],input[type=date]{font:inherit;color:inherit;background:transparent;border:0;border-bottom:1px solid var(--line);padding:3px}
+.wrap{overflow-x:auto}
+table{border-collapse:collapse;width:100%;min-width:720px}
+th,td{border:1px solid var(--line);padding:3px 6px;text-align:center}
+th{background:var(--head)}
+td.n{width:32px}
+td.tl{color:var(--mut);font-size:13px}
+tfoot td{border-top:3px double var(--line)}
+td.nm input{width:100%;box-sizing:border-box}
+td.c input{width:22px;height:22px}
+canvas{display:block;width:100%;height:46px;touch-action:none;cursor:crosshair}
+td.sg{width:260px;padding:0;position:relative}
+.act{position:absolute;right:2px;top:1px;display:flex;gap:4px}
+.clr{font-size:11px;border:0;background:transparent;color:var(--mut);cursor:pointer}
+tr.done td.n{color:var(--ok);font-weight:700}
+.bar{display:flex;flex-wrap:wrap;align-items:center;gap:12px;margin-top:12px}
+button.save{font:inherit;padding:10px 18px;border-radius:8px;border:0;background:#1b6ef3;color:#fff;cursor:pointer}
+button.save.alt{background:transparent;color:inherit;border:1px solid var(--line)}
+button.save:disabled{background:#999;cursor:not-allowed}
+button.rst{font:inherit;background:transparent;color:var(--mut);border:1px solid var(--line);border-radius:8px;padding:9px 14px;cursor:pointer}
+#msg{color:var(--mut);font-size:13px}
+</style>
+</head>
+<body>
+<h1>Anwesenheitsliste</h1>
+<div class="meta">
+  <label>Datum: <input type="date" id="date"></label>
+  <label>Art: <select id="type"><option value="">– bitte wählen –</option><option>Einsatz</option><option>Ausbildungsdienst</option></select></label>
+  <label>Bezeichnung: <input type="text" id="event" size="30"></label>
+</div>
+<div class="wrap">
+<table>
+<thead><tr><th>Nr.</th><th>Name</th><th>Bin da</th><th>Bin krank</th><th>Bin entschuldigt</th><th>Unterschrift</th></tr></thead>
+<tbody id="rows"></tbody>
+<tfoot id="trow"></tfoot>
+</table>
+</div>
+<div class="bar">
+  <button class="save" id="pdf" disabled>Als PDF speichern</button>
+  <button class="save alt" id="save" disabled>Als HTML speichern</button>
+  <button class="rst" id="rst">Zurücksetzen</button>
+  <span id="msg"></span>
+</div>
+<script src="https://cdnjs.cloudflare.com/ajax/libs/jspdf/2.5.1/jspdf.umd.min.js"></script>
+<script>
+(function(){
+var N=20,KEY="anwesenheit-v1",S=["da","krank","entschuldigt"];
+var state={date:"",type:"",event:"",p:[]};
+for(var i=0;i<N;i++)state.p.push({name:"",st:"",sig:""});
+try{var raw=localStorage.getItem(KEY);if(raw){var o=JSON.parse(raw);if(o&&o.p&&o.p.length===N)state=o}}catch(e){}
+if(!state.t)state.t={name:"",sig:""};
+if(!state.seeded){state.p.forEach(function(p,i){if(!p.name)p.name="Kamerad "+(i+1)});state.seeded=true}
+function persist(){try{localStorage.setItem(KEY,JSON.stringify(state))}catch(e){}}
+var pdfBtn=document.getElementById("pdf"),rows=document.getElementById("rows"),saveBtn=document.getElementById("save"),msg=document.getElementById("msg");
+var dateEl=document.getElementById("date"),evEl=document.getElementById("event");
+var typeEl=document.getElementById("type");
+dateEl.value=state.date;evEl.value=state.event;typeEl.value=state.type||"";
+typeEl.onchange=function(){state.type=typeEl.value;persist();check()};
+dateEl.oninput=function(){state.date=dateEl.value;persist();check()};
+evEl.oninput=function(){state.event=evEl.value;persist()};
+var trs=[];
+var all=[];
+function build(i,isT){
+  var p=isT?state.t:state.p[i],tr=document.createElement("tr");
+  tr.innerHTML=(isT?'<td class="n">A</td><td class="nm"><input type="text" placeholder="Name Ausbilder"></td><td class="tl" colspan="3">Unterschrift Ausbilder</td>':'<td class="n">'+(i+1)+'</td><td class="nm"><input type="text" placeholder="Name"></td>'+
+  S.map(function(s){return '<td class="c"><input type="checkbox" data-s="'+s+'"></td>'}).join(""))+
+  '<td class="sg"><canvas></canvas><span class="act"><button class="clr img" type="button">Bild</button><button class="clr x" type="button">löschen</button></span><input type="file" accept="image/*" hidden></td>';
+  var nm=tr.querySelector(".nm input");nm.value=p.name;
+  nm.oninput=function(){p.name=nm.value;persist();check()};
+  var cbs=tr.querySelectorAll("input[type=checkbox]");
+  cbs.forEach(function(cb){
+    cb.checked=p.st===cb.dataset.s;
+    cb.onchange=function(){
+      p.st=cb.checked?cb.dataset.s:"";
+      cbs.forEach(function(o){o.checked=p.st===o.dataset.s});
+      persist();check();
+    };
+  });
+  var cv=tr.querySelector("canvas"),ctx,drawing=false,dirty=false;
+  function size(){
+    var r=cv.getBoundingClientRect(),d=window.devicePixelRatio||1;
+    if(!r.width)return;
+    cv.width=Math.round(r.width*d);cv.height=Math.round(r.height*d);
+    ctx=cv.getContext("2d");ctx.scale(d,d);ctx.lineWidth=2;ctx.lineCap="round";ctx.lineJoin="round";
+    ctx.strokeStyle=getComputedStyle(document.body).color;
+    if(p.sig){var im=new Image();im.onload=function(){var kk=Math.min(r.width/im.width,r.height/im.height),dw=im.width*kk,dh=im.height*kk;ctx.drawImage(im,(r.width-dw)/2,(r.height-dh)/2,dw,dh)};im.src=p.sig}
+  }
+  function pos(e){var r=cv.getBoundingClientRect();return[e.clientX-r.left,e.clientY-r.top]}
+  cv.addEventListener("pointerdown",function(e){
+    if(!ctx)size();drawing=true;dirty=true;cv.setPointerCapture(e.pointerId);
+    var q=pos(e);ctx.beginPath();ctx.moveTo(q[0],q[1]);ctx.lineTo(q[0]+.1,q[1]+.1);ctx.stroke();e.preventDefault();
+  });
+  cv.addEventListener("pointermove",function(e){
+    if(!drawing)return;var q=pos(e);ctx.lineTo(q[0],q[1]);ctx.stroke();
+  });
+  function end(){
+    if(!drawing)return;drawing=false;
+    var tmp=document.createElement("canvas");tmp.width=cv.width;tmp.height=cv.height;
+    p.sig=cv.toDataURL("image/png");persist();check();
+  }
+  cv.addEventListener("pointerup",end);cv.addEventListener("pointercancel",end);
+  tr.querySelector(".x").onclick=function(){
+    p.sig="";if(!ctx)size();ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,cv.width,cv.height);ctx.restore();persist();check();
+  };
+  var fi=tr.querySelector("input[type=file]");
+  tr.querySelector(".img").onclick=function(){fi.click()};
+  fi.onchange=function(){
+    var f=fi.files&&fi.files[0];if(!f)return;
+    var url=URL.createObjectURL(f),im=new Image();
+    im.onload=function(){
+      var W=400,H=92,k=Math.min(W/im.width,H/im.height,1);
+      var w=Math.round(im.width*k),h=Math.round(im.height*k);
+      var t=document.createElement("canvas");t.width=w;t.height=h;
+      var c=t.getContext("2d");c.fillStyle="#fff";c.fillRect(0,0,w,h);c.drawImage(im,0,0,w,h);
+      p.sig=t.toDataURL("image/jpeg",0.85);URL.revokeObjectURL(url);
+      var r=cv.getBoundingClientRect();if(!ctx)size();
+      ctx.save();ctx.setTransform(1,0,0,1,0,0);ctx.clearRect(0,0,cv.width,cv.height);ctx.restore();
+      var q=new Image();q.onload=function(){var kk=Math.min(r.width/q.width,r.height/q.height);var dw=q.width*kk,dh=q.height*kk;ctx.drawImage(q,(r.width-dw)/2,(r.height-dh)/2,dw,dh)};q.src=p.sig;
+      persist();check();fi.value="";
+    };
+    im.onerror=function(){URL.revokeObjectURL(url);msg.textContent="Bild konnte nicht gelesen werden."};
+    im.src=url;
+  };
+  (isT?document.getElementById("trow"):rows).appendChild(tr);var ent={tr:tr,size:size};all.push(ent);if(isT)tEnt=ent;else trs.push(ent);
+}
+var tEnt;
+for(var i=0;i<N;i++)build(i);
+build(0,true);
+function complete(i){var p=state.p[i];return p.name.trim()&&p.st&&p.sig}
+function check(){
+  var open=0;
+  for(var i=0;i<N;i++){var ok=!!complete(i);trs[i].tr.classList.toggle("done",ok);if(!ok)open++}
+  var tOk=!!(state.t.name.trim()&&state.t.sig);tEnt.tr.classList.toggle("done",tOk);
+  var needDate=!state.date,needType=!state.type;
+  saveBtn.disabled=open>0||needDate||needType||!tOk;pdfBtn.disabled=saveBtn.disabled;
+  msg.textContent=saveBtn.disabled?
+    ("Noch offen: "+(open?open+" von "+N+" Personen (Name, Auswahl, Unterschrift)":"")+((open&&(needDate||needType||!tOk))?" sowie ":"")+[needType?"Art (Einsatz/Ausbildungsdienst)":"",needDate?"Datum":"",tOk?"":"Ausbilder (Name, Unterschrift)"].filter(Boolean).join(", ")):
+    "Alles ausgefüllt – Speichern möglich.";
+}
+function esc(s){return String(s).replace(/[&<>"]/g,function(c){return{"&":"&amp;","<":"&lt;",">":"&gt;",'"':"&quot;"}[c]})}
+function doc(){
+  var mk=function(p,s){return p.st===s?"&#9746;":"&#9744;"};
+  var r=state.p.map(function(p,i){return "<tr><td>"+(i+1)+"</td><td>"+esc(p.name)+"</td><td>"+mk(p,"da")+"</td><td>"+mk(p,"krank")+"</td><td>"+mk(p,"entschuldigt")+'</td><td><img src="'+p.sig+'" height="40"></td></tr>'}).join("");
+  return '<!DOCTYPE html><html lang="de"><head><meta charset="utf-8"><title>Anwesenheitsliste '+esc(state.date)+'</title><style>body{font-family:sans-serif}table{border-collapse:collapse;width:100%}td,th{border:1px solid #444;padding:4px 8px;text-align:center}th{background:#e8e8e8}</style></head><body><h1>Anwesenheitsliste</h1><p>Art: '+esc(state.type)+' &nbsp; Bezeichnung: '+esc(state.event)+' &nbsp; Datum: '+esc(state.date)+'</p><table><tr><th>Nr.</th><th>Name</th><th>Bin da</th><th>Bin krank</th><th>Bin entschuldigt</th><th>Unterschrift</th></tr>'+r+'</table><p style="margin-top:24px"><b>Ausbilder:</b> '+esc(state.t.name)+'<br><img src="'+state.t.sig+'" height="50"></p></body></html>';
+}
+saveBtn.onclick=async function(){
+  if(saveBtn.disabled)return;
+  var dl=null;try{dl=await claude.use("downloads")}catch(e){}
+  var html=doc(),name="Anwesenheitsliste-"+state.type+"-"+state.date+".html";
+  if(dl){
+    try{await dl.save({filename:name,data:html});msg.textContent="Gespeichert.";}
+    catch(e){msg.textContent=e&&e.code==="declined"?"Speichern abgebrochen.":"Speichern hier nicht möglich."}
+  }else{msg.textContent="Speichern ist in dieser Ansicht nicht verfügbar."}
+};
+function loadImg(src){return new Promise(function(res){var i=new Image();i.onload=function(){res(i)};i.onerror=function(){res(null)};i.src=src})}
+function fit(im,mw,mh){var k=Math.min(mw/im.width,mh/im.height);return[im.width*k,im.height*k]}
+pdfBtn.onclick=async function(){
+  if(pdfBtn.disabled)return;
+  var J=window.jspdf&&window.jspdf.jsPDF;
+  if(!J){msg.textContent="PDF-Erstellung ist hier nicht verfügbar.";return}
+  var dl=null;try{dl=await claude.use("downloads")}catch(e){}
+  if(!dl){msg.textContent="Speichern ist in dieser Ansicht nicht verfügbar.";return}
+  msg.textContent="PDF wird erstellt …";
+  var d=new J({orientation:"landscape",unit:"mm",format:"a4"});
+  var X=[10,20,90,112,134,164,287],H=["Nr.","Name","Bin da","Bin krank","Bin entschuldigt","Unterschrift"];
+  d.setFont("helvetica","bold");d.setFontSize(15);d.text("Anwesenheitsliste",148.5,13,{align:"center"});
+  d.setFont("helvetica","normal");d.setFontSize(10);
+  var dp=state.date.split("-").reverse().join(".");
+  d.text("Art: "+state.type+"     Bezeichnung: "+state.event+"     Datum: "+dp,10,20);
+  var y=24,rh=7.2;
+  function row(y,h,fill){if(fill){d.setFillColor(230,230,230);d.rect(10,y,277,h,"F")}d.setDrawColor(0);d.setLineWidth(0.25);d.rect(10,y,277,h);for(var c=1;c<6;c++)d.line(X[c],y,X[c],y+h)}
+  row(y,7,true);d.setFont("helvetica","bold");
+  H.forEach(function(t,c){d.text(t,c===1?X[c]+2:(X[c]+X[c+1])/2,y+4.8,{align:c===1?"left":"center"})});
+  d.setFont("helvetica","normal");y+=7;
+  var imgs=await Promise.all(state.p.map(function(p){return loadImg(p.sig)}));
+  var timg=await loadImg(state.t.sig);
+  function sig(im,src,x0,x1,y0,h){if(!im)return;var z=fit(im,x1-x0-4,h-1.2);d.addImage(src,src.indexOf("jpeg")>0?"JPEG":"PNG",(x0+x1)/2-z[0]/2,y0+(h-z[1])/2,z[0],z[1])}
+  for(var i=0;i<N;i++){
+    var p=state.p[i];row(y,rh,false);
+    d.text(String(i+1),(X[0]+X[1])/2,y+4.9,{align:"center"});
+    d.text(p.name,X[1]+2,y+4.9,{maxWidth:X[2]-X[1]-4});
+    S.forEach(function(k,j){
+      var cx=(X[2+j]+X[3+j])/2,s=4;
+      d.rect(cx-s/2,y+(rh-s)/2,s,s);
+      if(p.st===k){d.setLineWidth(0.5);d.line(cx-s/2+.7,y+(rh-s)/2+.7,cx+s/2-.7,y+(rh+s)/2-.7);d.line(cx+s/2-.7,y+(rh-s)/2+.7,cx-s/2+.7,y+(rh+s)/2-.7);d.setLineWidth(0.25)}
+    });
+    sig(imgs[i],p.sig,X[5],X[6],y,rh);
+    y+=rh;
+  }
+  y+=4;var th=12;d.setDrawColor(0);d.setLineWidth(0.25);d.rect(10,y,277,th);
+  d.setFont("helvetica","bold");d.text("Ausbilder",12,y+4.5);d.setFont("helvetica","normal");
+  d.text(state.t.name,12,y+9,{maxWidth:X[5]-14});
+  d.line(X[5],y,X[5],y+th);sig(timg,state.t.sig,X[5],X[6],y,th);
+  var name="Anwesenheitsliste-"+state.type+"-"+state.date+".pdf";
+  try{await dl.save({filename:name,data:d.output("arraybuffer")});msg.textContent="Gespeichert."}
+  catch(e){msg.textContent=e&&e.code==="declined"?"Speichern abgebrochen.":"Speichern hier nicht möglich."}
+};
+document.getElementById("rst").onclick=function(){
+  if(!confirm("Alle Eingaben löschen?"))return;
+  try{localStorage.removeItem(KEY)}catch(e){}
+  location.reload();
+};
+window.addEventListener("load",function(){all.forEach(function(t){t.size()});check()});
+window.addEventListener("resize",function(){all.forEach(function(t){t.size()})});
+check();
+})();
+</script>
+</body>
+</html>
